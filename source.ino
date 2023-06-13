@@ -1,8 +1,10 @@
+
 /*
- * 04.09.2020
+ * 13.09.2020
  * Der ESP32 ist in der Lage zuverlässig den Motor zu steuern und Messdaten zu lesen. 
- * Das Display zeigt die aktuelle Geschwindigkeit an. Außerdem gibt das Display eine Warnung bei Übertemperatur aus. 
- * Danach wurde ein Sicherheitsmechanismus implementiert, bei dem ein Schalter geschlossen bleiben muss, anderenfalls wird der Motor gebremst. 
+ * Das Display zeigt die aktuelle Geschwindigkeit an. Außerdem gibt das Display Meldungen bei Fehlern aus. 
+ * Es ist ein Sicherheitsmechanismus implementiert, bei dem ein Schalter geschlossen bleiben muss, ansonsten wird der Motor gebremst. 
+ * Mit dem Throttle kann die Geschwindigkeit gesteuert werden. 
  */
 
  /*
@@ -10,7 +12,8 @@
   * Serial (VESC 1): RX = RX, TX = TX
   * Serial2 (VESC 2): RX = 16, TX = 17
   * I2C: SDA = 21, SCL = 22, GND = GND, VCC = 5V/3.3V
-  * Totmannschalter = 18
+  * Safety Switch = 18
+  * Throttle: red = 3.3V, black = GND, white = 4
   */
 
 //Include libraries for VESC
@@ -28,12 +31,15 @@
 
 //Define GPIO pin for button
 #define BUTTON 18
+#define THROTTLE 4
 
 //Global variables
 boolean openswitch;
 boolean vescunavailable;
 boolean overheating1;
 boolean overheating2;
+int32_t throttleValue;
+int32_t driveRPM;
 
 //Create required class instances
 ESP8266VESC esp8266VESC1 = ESP8266VESC(Serial2); //VESC 1
@@ -67,22 +73,46 @@ boolean readVESC() {
   }
 }
 
+
+//Read throttle and convert value to useful range
+void readThrottle() {
+  int32_t throttleValue = analogRead(THROTTLE);
+  throttleValue -= 900; //offset of ~840
+
+  //scale remaining range of 0-2000 to rpm value
+  //throttleValue *= 4;
+
+  //if negative due to offset reset to 0
+  if(throttleValue < 0) {
+    throttleValue = 0;
+  }
+  //otherwise set rpm value to throttle input
+  else {
+    driveRPM = throttleValue;
+  }
+}
+
+
 //Read all sensors function
 void readSensors() {
+  //Read VESC sensors
+  vescunavailable = !readVESC();
+  
   //Read safety switch 
   if(digitalRead(BUTTON)){
     openswitch = true;
+    driveRPM = 0;
   }
   else {
     openswitch = false;
+    
+    //Check for overheating after reading VESC sensors
+    overheating1 = overtemperature(vescValues1);
+    overheating2 = overtemperature(vescValues2);
+
+    //read throttle
+    readThrottle();
   }
-
-  //Read VESC sensors
-  vescunavailable = !readVESC();
-
-  //Check for overheating after reading VESC sensors
-  overheating1 = overtemperature(vescValues1);
-  overheating2 = overtemperature(vescValues2);
 }
 
 
@@ -95,8 +125,8 @@ void drive(int rpm) {
   else {
     if (openswitch) {
       //Brake
-      esp8266VESC1.fullBreaking();
-      esp8266VESC2.fullBreaking();
+      esp8266VESC1.setCurrentBrake(1.0);
+      esp8266VESC2.setCurrentBrake(1.0);
     }
     else {
       esp8266VESC1.setRPM(rpm);
@@ -140,13 +170,14 @@ void showOnDisplay () {
       }
       else {
         //display average velocity on display
-        //string rpm1 = string.toString(vescValues1.rpm);
-        int velocity1 = (int)((vescValues1.rpm * 254) / 60000);
-        int velocity2 = (int)((vescValues2.rpm * 254) / 60000);
-        int velocity = (velocity1 + velocity2) / 2;
+        //int32_t velocity1 = ((vescValues1.rpm * 254) / 60000);
+        //int32_t velocity2 = ((vescValues2.rpm * 254) / 60000);
+        //int32_t velocity = (velocity1 + velocity2) / 2;
+
+        int32_t velocity = ((vescValues1.rpm * 254) / 60000);
     
         display.setTextSize(2);
-        display.print(vescValues1.rpm);
+        display.print(velocity);
         display.print(" km/h");
         display.println();
       }    
@@ -193,7 +224,7 @@ void loop() {
   readSensors();
 
   //Control motor
-  drive(0);
+  drive(driveRPM);
   
   //Write on display
   showOnDisplay();
