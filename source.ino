@@ -1,121 +1,155 @@
-#include <ESP8266VESC.h>
-#include <HardwareSerial.h>
-
 /*
- * 27.08.2020
+ * 01.09.2020
  * Der ESP32 ist in der Lage zuverlässig den Motor zu steuern und Messdaten zu lesen. 
- * 
- * Nächste Schritte:
- * - Anbindung an App
- * - Implementierung von Steuerungsfunktionen wie Lenken, ...
+ * Das Display zeigt die aktuelle Geschwindigkeit an. Außerdem gibt das Display eine Warnung bei Übertemperatur aus. 
  */
  
-//Instanz "Serial": Rx = GPIO3, Tx = GPIO1, aber doppelbelegt mit USB!
-//Instanz "Serial2": Rx = GPIO16, Tx = GPIO17
-//Instanz "Serial1" nicht benutzen, doppelbelegt mit Flash-Speicher!
+//Include libraries for VESC
+#include <HardwareSerial.h>
+#include <ESP8266VESC.h>
 
-//Define global variables
+//Include libraries for display
+#include <Wire.h>
+#include <Adafruit_SSD1306.h>
+#include <Adafruit_GFX.h>
+
+//Define display size
+#define SCREEN_WIDTH 128 // OLED display width, in pixels
+#define SCREEN_HEIGHT 32 // OLED display height, in pixels
+
+//Create required class instances
 ESP8266VESC esp8266VESC1 = ESP8266VESC(Serial2); //VESC 1
 ESP8266VESC esp8266VESC2 = ESP8266VESC(Serial); //VESC 2
+VESCValues vescValues1;
+VESCValues vescValues2;
+Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, -1); //Display
 
-void setup() {
-  //Setup serial connection to VESC 1
-  Serial.begin(115200);
-  delay(500);
-  
-  //Setup serial connection to VESC 1
-  Serial2.begin(115200);
-  delay(500);
+
+//if any of the MOSFET temperatures is above 100, or the PCB temperature above 80 then return true
+boolean overtemperature (VESCValues vescValues) {
+  if (vescValues.temperatureMosfet1 > 100.0 || vescValues.temperatureMosfet2 > 100.0 || vescValues.temperatureMosfet3 > 100.0 || vescValues.temperatureMosfet4 > 100.0 || vescValues.temperatureMosfet5 > 100.0 || vescValues.temperatureMosfet6 > 100.0 || vescValues.temperaturePCB > 80.0) {
+    return true;
+  }
+  else {
+    return false;
+  }
 }
 
 
-void loop() {
-  //Write to VESC
-  esp8266VESC1.setRPM(5000);
-  esp8266VESC2.setRPM(5000);
-  delay(2000);
-
-  esp8266VESC1.releaseEngine();
-  esp8266VESC2.releaseEngine();
-  delay(2000);
-
-  esp8266VESC1.setCurrent(5.0);
-  esp8266VESC2.setCurrent(5.0);
-  delay(2000);
-
-  esp8266VESC1.fullBreaking();
-  esp8266VESC2.fullBreaking();
-  delay(2000);
-
-  //Read from VESC
-  VESCValues vescValues1;
-  VESCValues vescValues2;
+//read sensor values from both VESCs and return true if successful
+boolean readVESC() {
+  boolean vesc1 = esp8266VESC1.getVESCValues(vescValues1);
+  boolean vesc2 = esp8266VESC2.getVESCValues(vescValues2);
   
-  if (esp8266VESC1.getVESCValues(vescValues1) == true)
-  {
-    /*vescValues1.temperatureMosfet1
-    vescValues1.temperatureMosfet2
-    vescValues1.temperatureMosfet3
-    vescValues1.temperatureMosfet4
-    vescValues1.temperatureMosfet5
-    vescValues1.temperatureMosfet6
-    vescValues1.temperaturePCB
+  if ((vesc1 == false) || (vesc2 == false)) {
+    return false;
+  }
+  else {
+    return true;
+  }
+}
 
-    vescValues1.avgMotorCurrent
-    vescValues1.avgInputCurrent
-    vescValues1.dutyCycleNow
-        
-    vescValues1.rpm
-    vescValues1.inputVoltage
-        
-    vescValues1.ampHours
-    vescValues1.ampHoursCharged
 
-    vescValues1.wattHours
-    vescValues1.wattHoursCharged
+//if overheating show warning, otherwise show velocity
+void showOnDisplay () {
+  //clear display from previous values
+  display.clearDisplay();
+
+  //set cursor to position to keep image stable
+  display.setCursor(0, 10);
+
+  int velocity1;
+  int velocity2;
+  boolean overheating1 = overtemperature(vescValues1);;
+  boolean overheating2 = overtemperature(vescValues2);
+
+  if (overheating1 && overheating2) {
+    display.setTextSize(2);
+    display.println("WARNING: Both VESCs overheat! Driving blocked for safety");
+  }
+  else if (overheating1) {
+    display.setTextSize(2);
+	  display.println("WARNING: VESC 1 overheats! Driving blocked for safety");
+  }
+  else if (overheating2) {
+    display.setTextSize(2);
+	  display.println("WARNING: VESC 2 overheats! Driving blocked for safety");
+  }
+  else {
+    //display average velocity on display
+    //string rpm1 = string.toString(vescValues1.rpm);
+    velocity1 = (int)((vescValues1.rpm * 254) / 60000);
+	  velocity2 = (int)((vescValues2.rpm * 254) / 60000);
+	  
+	  int velocity = (velocity1 + velocity2) / 2;
     
-    vescValues1.tachometer
-    vescValues1.tachometerAbs
-    */
-  }
-  else
-  {
-    //unable to read...
+    display.setTextSize(2);
+    display.print(vescValues1.rpm);
+    display.print(" km/h");
+    display.println();
   }
 
-  if (esp8266VESC2.getVESCValues(vescValues2) == true)
-  {
-    /*vescValues2.temperatureMosfet1
-    vescValues2.temperatureMosfet2
-    vescValues2.temperatureMosfet3
-    vescValues2.temperatureMosfet4
-    vescValues2.temperatureMosfet5
-    vescValues2.temperatureMosfet6
-    vescValues2.temperaturePCB
+  //show on display
+  display.display(); 
+}
 
-    vescValues2.avgMotorCurrent
-    vescValues2.avgInputCurrent
-    vescValues2.dutyCycleNow
-        
-    vescValues2.rpm
-    vescValues2.inputVoltage
-        
-    vescValues2.ampHours
-    vescValues2.ampHoursCharged
 
-    vescValues2.wattHours
-    vescValues2.wattHoursCharged
-    
-    vescValues2.tachometer
-    vescValues2.tachometerAbs
-    */
+//sets the rpm value to the given parameter, except if overtemperature is detected in which case the motor goes to idle
+void drive(int rpm) {
+  if (overtemperature(vescValues1) && overtemperature(vescValues2)) {
+    esp8266VESC1.releaseEngine();
+    esp8266VESC2.releaseEngine();
   }
-  else
-  {
-    //unable to read...
+  else {
+    esp8266VESC1.setRPM(rpm);
+    esp8266VESC2.setRPM(rpm);
+  }
+}
+
+
+//Initialization
+void setup() {
+  //Setup serial connection to VESC 1
+  Serial.begin(115200);
+  delay(50);
+  
+  //Setup serial connection to VESC 1
+  Serial2.begin(115200);
+  delay(50);
+
+  //Initialize display
+  display.begin(SSD1306_SWITCHCAPVCC, 0x3C);
+  delay(50);
+  display.clearDisplay();
+  display.setTextColor(WHITE);
+
+  //Show successful Bootup on display for 2s
+  display.setTextSize(2);
+  display.println("Bootup    successful");
+  display.display();
+  delay(2000);
+  display.clearDisplay();
+}
+
+
+//Program routine
+void loop() {  
+  //Read sensors, if sensor values couldn't be set idle and display error message
+  while(!readVESC()) {
+	  esp8266VESC1.releaseEngine();
+	  esp8266VESC2.releaseEngine();
+   
+    display.setTextSize(1);
+    display.setCursor(0, 0);
+	  display.println("ERROR: Connection    failure to one or    both Motorcontrollers");
+	  display.display();
   }
   
-  delay(1000);
+  //Show velocity on display, give warning if overheating
+  showOnDisplay();
+  
+  //Set given rpm value, if motor is not overheating
+  drive(0);
 }
 
 /*
