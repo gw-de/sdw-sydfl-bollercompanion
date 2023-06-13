@@ -1,10 +1,10 @@
-
 /*
- * 13.09.2020
+ * 17.09.2020
  * Der ESP32 ist in der Lage zuverlässig den Motor zu steuern und Messdaten zu lesen. 
  * Das Display zeigt die aktuelle Geschwindigkeit an. Außerdem gibt das Display Meldungen bei Fehlern aus. 
  * Es ist ein Sicherheitsmechanismus implementiert, bei dem ein Schalter geschlossen bleiben muss, ansonsten wird der Motor gebremst. 
  * Mit dem Throttle kann die Geschwindigkeit gesteuert werden. 
+ * Wird der Throttle nicht genutzt wird die Geschwindigkeit über den Winkel der Achse gesteuert. 
  */
 
  /*
@@ -14,26 +14,56 @@
   * I2C: SDA = 21, SCL = 22, GND = GND, VCC = 5V/3.3V
   * Safety Switch = 18
   * Throttle: red = 3.3V, black = GND, white = 4
+  * Gyro ID configuration = 5
   */
 
-//Include libraries for VESC
+/*
+ * TO-DO:
+ * Werte von den Gyros werden gelesen, es muss noch Winkel und die weitere Berechnung programmiert werden. 
+ */
+
+/*
+ * Include Libraries
+ */
+//Enable UART and I2C communication
 #include <HardwareSerial.h>
+#include <Wire.h>
+
+//Include library for VESC
 #include <ESP8266VESC.h>
 
 //Include libraries for display
-#include <Wire.h>
 #include <Adafruit_SSD1306.h>
 #include <Adafruit_GFX.h>
 
+/*
+ * Define constants and global variables
+ */
 //Define display size
 #define SCREEN_WIDTH 128 // OLED display width, in pixels
 #define SCREEN_HEIGHT 32 // OLED display height, in pixels
 
-//Define GPIO pin for button
+//Define GPIO pins
 #define BUTTON 18
 #define THROTTLE 4
+#define GYRO 5
+
+//Define ids for gyros
+#define MPU6050_ADRESS1 0x68
+#define MPU6050_ADRESS2 0x69
+
+//Gyro constants
+const int ACCEL_OFFSET   = 200;
+const int GYRO_OFFSET    = 151;  // 151
+const int GYRO_SENSITITY = 131;  // 131 is sensivity of gyro from data sheet
+const float GYRO_SCALE   = 0.2; //  0.02 by default - tweak as required
+const float LOOP_TIME    = 0.15; // 0.1 = 100ms
 
 //Global variables
+int accValue1[3], accAngle1[3], gyroValue1[3], temperature1, accCorr1;
+float gyroAngle1[3], gyroCorr1;
+int accValue2[3], accAngle2[3], gyroValue2[3], temperature2, accCorr2;
+float gyroAngle2[3], gyroCorr2;
 boolean openswitch;
 boolean vescunavailable;
 boolean overheating1;
@@ -41,12 +71,15 @@ boolean overheating2;
 int32_t throttleValue;
 int32_t driveRPM;
 
-//Create required class instances
+/*
+ * Create required class instances
+ */
 ESP8266VESC esp8266VESC1 = ESP8266VESC(Serial2); //VESC 1
 ESP8266VESC esp8266VESC2 = ESP8266VESC(Serial); //VESC 2
 VESCValues vescValues1;
 VESCValues vescValues2;
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, -1); //Display
+
 
 
 //if any of the MOSFET temperatures is above 100, or the PCB temperature above 80 then return true
@@ -71,6 +104,113 @@ boolean readVESC() {
   else {
     return true;
   }
+
+  /*
+  //Simulation
+  vescValues1.temperatureMosfet1 = 0.0;
+  vescValues1.temperatureMosfet2 = 0.0;
+  vescValues1.temperatureMosfet3 = 0.0;
+  vescValues1.temperatureMosfet4 = 0.0;
+  vescValues1.temperatureMosfet5 = 0.0;
+  vescValues1.temperatureMosfet6 = 0.0;
+  vescValues1.temperaturePCB = 0.0;
+  vescValues1.avgMotorCurrent = 0.0;
+  vescValues1.avgInputCurrent = 0.0;
+  vescValues1.dutyCycleNow = 0.0;
+  //vescValues1.rpm = 0;
+  vescValues1.inputVoltage = 0.0;
+  vescValues1.ampHours = 0.0;
+  vescValues1.ampHoursCharged = 0.0;
+  vescValues1.wattHours = 0.0;
+  vescValues1.wattHoursCharged = 0.0;
+  vescValues1.tachometer = 0;
+  vescValues1.tachometerAbs = 0;
+
+  vescValues2.temperatureMosfet1 = 0.0;
+  vescValues2.temperatureMosfet2 = 0.0;
+  vescValues2.temperatureMosfet3 = 0.0;
+  vescValues2.temperatureMosfet4 = 0.0;
+  vescValues2.temperatureMosfet5 = 0.0;
+  vescValues2.temperatureMosfet6 = 0.0;
+  vescValues2.temperaturePCB = 0.0;
+  vescValues2.avgMotorCurrent = 0.0;
+  vescValues2.avgInputCurrent = 0.0;
+  vescValues2.dutyCycleNow = 0.0;
+  //vescValues2.rpm = 0;
+  vescValues2.inputVoltage = 0.0;
+  vescValues2.ampHours = 0.0;
+  vescValues2.ampHoursCharged = 0.0;
+  vescValues2.wattHours = 0.0;
+  vescValues2.wattHoursCharged = 0.0;
+  vescValues2.tachometer = 0;
+  vescValues2.tachometerAbs = 0;
+
+  vescValues1.rpm = driveRPM;
+  vescValues2.rpm = driveRPM;
+
+  return true;
+  */
+}
+
+
+//Read gyro and calculate angle between them 
+void readGyro() {
+  //Read first gyro
+  Wire.beginTransmission(MPU6050_ADRESS1);
+  Wire.write(0x3B); // starting with register 0x3B (ACCEL_XOUT_H) [MPU-6000 and MPU-6050 Register Map and Descriptions Revision 4.2, p.40]
+  Wire.endTransmission(false); // the parameter indicates that the Arduino will send a restart. As a result, the connection is kept active.
+  Wire.requestFrom(MPU6050_ADRESS1, 7*2, true); // request a total of 7*2=14 registers
+
+  // "Wire.read()<<8 | Wire.read();" means two registers are read and stored in the same variable
+  for(byte i=0; i<3; i++) {
+    accValue1[i] = Wire.read()<<8 | Wire.read(); // reading registers: ACCEL_XOUT, ACCEL_YOUT, ACCEL_ZOUT
+  }
+  temperature1 = Wire.read()<<8 | Wire.read(); // reading registers: 0x41 (TEMP_OUT_H) and 0x42 (TEMP_OUT_L)
+  for(byte i=0; i<3; i++) {
+    gyroValue1[i] = Wire.read()<<8 | Wire.read(); // reading registers: GYRO_XOUT, GYRO_YOUT, GYRO_ZOUT
+  }
+
+  //Read second gyro
+  Wire.beginTransmission(MPU6050_ADRESS2);
+  Wire.write(0x3B); // starting with register 0x3B (ACCEL_XOUT_H) [MPU-6000 and MPU-6050 Register Map and Descriptions Revision 4.2, p.40]
+  Wire.endTransmission(false); // the parameter indicates that the Arduino will send a restart. As a result, the connection is kept active.
+  Wire.requestFrom(MPU6050_ADRESS2, 7*2, true); // request a total of 7*2=14 registers
+
+  // "Wire.read()<<8 | Wire.read();" means two registers are read and stored in the same variable
+  for(byte i=0; i<3; i++) {
+    accValue2[i] = Wire.read()<<8 | Wire.read(); // reading registers: ACCEL_XOUT, ACCEL_YOUT, ACCEL_ZOUT
+  }
+  temperature2 = Wire.read()<<8 | Wire.read(); // reading registers: 0x41 (TEMP_OUT_H) and 0x42 (TEMP_OUT_L)
+  for(byte i=0; i<3; i++) {
+    gyroValue2[i] = Wire.read()<<8 | Wire.read(); // reading registers: GYRO_XOUT, GYRO_YOUT, GYRO_ZOUT
+  }
+
+  //Calculate angle for first gyro
+  for(byte i=0; i<3; i++) {
+    accCorr1 = accValue1[i] - ACCEL_OFFSET;
+    accCorr1 = map(accCorr1, -16800, 16800, -90, 90);
+    accAngle1[i] = constrain(accCorr1, -90, 90);
+  }
+
+   for(byte i=0; i<3; i++) {
+    gyroCorr1 = (float)((gyroValue1[i]/GYRO_SENSITITY) - GYRO_OFFSET);
+    gyroAngle1[i] = (gyroCorr1 * GYRO_SCALE) * -LOOP_TIME;
+  }
+
+  //Calculate angle for second gyro
+  for(byte i=0; i<3; i++) {
+    accCorr2 = accValue2[i] - ACCEL_OFFSET;
+    accCorr2 = map(accCorr2, -16800, 16800, -90, 90);
+    accAngle2[i] = constrain(accCorr2, -90, 90);
+  }
+
+   for(byte i=0; i<3; i++) {
+    gyroCorr2 = (float)((gyroValue2[i]/GYRO_SENSITITY) - GYRO_OFFSET);
+    gyroAngle2[i] = (gyroCorr2 * GYRO_SCALE) * -LOOP_TIME;
+  }
+  
+  //Calculate rpm value from sensor values
+  //driveRPM = gyroAngle1[1] - gyroAngle2[1];
 }
 
 
@@ -95,24 +235,26 @@ void readThrottle() {
 
 //Read all sensors function
 void readSensors() {
-  //Read VESC sensors
-  vescunavailable = !readVESC();
-  
   //Read safety switch 
   if(digitalRead(BUTTON)){
     openswitch = true;
-    driveRPM = 0;
   }
   else {
     openswitch = false;
-    
-    //Check for overheating after reading VESC sensors
-    overheating1 = overtemperature(vescValues1);
-    overheating2 = overtemperature(vescValues2);
-
-    //read throttle
-    readThrottle();
   }
+
+  //Read VESC sensors
+  vescunavailable = !readVESC();
+
+  //Check for overheating after reading VESC sensors
+  overheating1 = overtemperature(vescValues1);
+  overheating2 = overtemperature(vescValues2);
+
+  //read gyro, function controls desired speed
+  readGyro();
+
+  //read throttle, if used it overwrites speed value by gyro
+  readThrottle();
 }
 
 
@@ -125,8 +267,8 @@ void drive(int rpm) {
   else {
     if (openswitch) {
       //Brake
-      esp8266VESC1.setCurrentBrake(1.0);
-      esp8266VESC2.setCurrentBrake(1.0);
+      esp8266VESC1.fullBreaking();
+      esp8266VESC2.fullBreaking();
     }
     else {
       esp8266VESC1.setRPM(rpm);
@@ -170,11 +312,9 @@ void showOnDisplay () {
       }
       else {
         //display average velocity on display
-        //int32_t velocity1 = ((vescValues1.rpm * 254) / 60000);
-        //int32_t velocity2 = ((vescValues2.rpm * 254) / 60000);
-        //int32_t velocity = (velocity1 + velocity2) / 2;
-
-        int32_t velocity = ((vescValues1.rpm * 254) / 60000);
+        int32_t velocity1 = ((vescValues1.rpm * 254) / 60000);
+        int32_t velocity2 = ((vescValues2.rpm * 254) / 60000);
+        int32_t velocity = (velocity1 + velocity2) / 2;
     
         display.setTextSize(2);
         display.print(velocity);
@@ -203,6 +343,23 @@ void setup() {
   pinMode(BUTTON, INPUT_PULLUP);
   //attachInterrupt(BUTTON, ISR, CHANGE);  
 
+  //Setup first gyro
+  Wire.begin();
+  Wire.beginTransmission(MPU6050_ADRESS1); // Begins a transmission to the I2C slave (GY-521 board)
+  Wire.write(0x6B); // PWR_MGMT_1 register
+  Wire.write(0); // set to zero (wakes up the MPU-6050)
+  Wire.endTransmission(true);
+
+  //Setup second gyro
+  pinMode(GYRO, OUTPUT);
+  digitalWrite(GYRO, HIGH);
+  delay(100);
+  Wire.begin();
+  Wire.beginTransmission(MPU6050_ADRESS2); // Begins a transmission to the I2C slave (GY-521 board)
+  Wire.write(0x6B); // PWR_MGMT_1 register
+  Wire.write(0); // set to zero (wakes up the MPU-6050)
+  Wire.endTransmission(true);
+  
   //Initialize display
   display.begin(SSD1306_SWITCHCAPVCC, 0x3C);
   delay(50);
@@ -229,6 +386,7 @@ void loop() {
   //Write on display
   showOnDisplay();
 }
+
 
 /*
  * VESC library methods:
