@@ -36,6 +36,9 @@
 #include <Adafruit_SSD1306.h>
 #include <Adafruit_GFX.h>
 
+//Include library for gyro
+#include <MPU6050.h>
+
 /*
  * Define constants and global variables
  */
@@ -48,28 +51,18 @@
 #define THROTTLE 4
 #define GYRO 5
 
-//Define ids for gyros
-#define MPU6050_ADRESS1 0x68
-#define MPU6050_ADRESS2 0x69
-
-//Gyro constants
-const int ACCEL_OFFSET   = 200;
-const int GYRO_OFFSET    = 151;  // 151
-const int GYRO_SENSITITY = 131;  // 131 is sensivity of gyro from data sheet
-const float GYRO_SCALE   = 0.2; //  0.02 by default - tweak as required
-const float LOOP_TIME    = 0.15; // 0.1 = 100ms
-
-//Global variables
-int accValue1[3], accAngle1[3], gyroValue1[3], temperature1, accCorr1;
-float gyroAngle1[3], gyroCorr1;
-int accValue2[3], accAngle2[3], gyroValue2[3], temperature2, accCorr2;
-float gyroAngle2[3], gyroCorr2;
+//Define global variables
 boolean openswitch;
 boolean vescunavailable;
 boolean overheating1;
 boolean overheating2;
 int32_t throttleValue;
 int32_t driveRPM;
+
+int16_t a1x, a1y, a1z;
+int16_t g1x, g1y, g1z;
+int16_t a2x, a2y, a2z;
+int16_t g2x, g2y, g2z;
 
 /*
  * Create required class instances
@@ -79,6 +72,8 @@ ESP8266VESC esp8266VESC2 = ESP8266VESC(Serial); //VESC 2
 VESCValues vescValues1;
 VESCValues vescValues2;
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, -1); //Display
+MPU6050 mpu1;
+MPU6050 mpu2(0x69);
 
 
 
@@ -95,6 +90,7 @@ boolean overtemperature (VESCValues vescValues) {
 
 //read sensor values from both VESCs and return true if successful
 boolean readVESC() {
+  /*
   boolean vesc1 = esp8266VESC1.getVESCValues(vescValues1);
   boolean vesc2 = esp8266VESC2.getVESCValues(vescValues2);
   
@@ -104,8 +100,8 @@ boolean readVESC() {
   else {
     return true;
   }
+  */
 
-  /*
   //Simulation
   vescValues1.temperatureMosfet1 = 0.0;
   vescValues1.temperatureMosfet2 = 0.0;
@@ -149,68 +145,14 @@ boolean readVESC() {
   vescValues2.rpm = driveRPM;
 
   return true;
-  */
 }
 
 
 //Read gyro and calculate angle between them 
 void readGyro() {
-  //Read first gyro
-  Wire.beginTransmission(MPU6050_ADRESS1);
-  Wire.write(0x3B); // starting with register 0x3B (ACCEL_XOUT_H) [MPU-6000 and MPU-6050 Register Map and Descriptions Revision 4.2, p.40]
-  Wire.endTransmission(false); // the parameter indicates that the Arduino will send a restart. As a result, the connection is kept active.
-  Wire.requestFrom(MPU6050_ADRESS1, 7*2, true); // request a total of 7*2=14 registers
 
-  // "Wire.read()<<8 | Wire.read();" means two registers are read and stored in the same variable
-  for(byte i=0; i<3; i++) {
-    accValue1[i] = Wire.read()<<8 | Wire.read(); // reading registers: ACCEL_XOUT, ACCEL_YOUT, ACCEL_ZOUT
-  }
-  temperature1 = Wire.read()<<8 | Wire.read(); // reading registers: 0x41 (TEMP_OUT_H) and 0x42 (TEMP_OUT_L)
-  for(byte i=0; i<3; i++) {
-    gyroValue1[i] = Wire.read()<<8 | Wire.read(); // reading registers: GYRO_XOUT, GYRO_YOUT, GYRO_ZOUT
-  }
-
-  //Read second gyro
-  Wire.beginTransmission(MPU6050_ADRESS2);
-  Wire.write(0x3B); // starting with register 0x3B (ACCEL_XOUT_H) [MPU-6000 and MPU-6050 Register Map and Descriptions Revision 4.2, p.40]
-  Wire.endTransmission(false); // the parameter indicates that the Arduino will send a restart. As a result, the connection is kept active.
-  Wire.requestFrom(MPU6050_ADRESS2, 7*2, true); // request a total of 7*2=14 registers
-
-  // "Wire.read()<<8 | Wire.read();" means two registers are read and stored in the same variable
-  for(byte i=0; i<3; i++) {
-    accValue2[i] = Wire.read()<<8 | Wire.read(); // reading registers: ACCEL_XOUT, ACCEL_YOUT, ACCEL_ZOUT
-  }
-  temperature2 = Wire.read()<<8 | Wire.read(); // reading registers: 0x41 (TEMP_OUT_H) and 0x42 (TEMP_OUT_L)
-  for(byte i=0; i<3; i++) {
-    gyroValue2[i] = Wire.read()<<8 | Wire.read(); // reading registers: GYRO_XOUT, GYRO_YOUT, GYRO_ZOUT
-  }
-
-  //Calculate angle for first gyro
-  for(byte i=0; i<3; i++) {
-    accCorr1 = accValue1[i] - ACCEL_OFFSET;
-    accCorr1 = map(accCorr1, -16800, 16800, -90, 90);
-    accAngle1[i] = constrain(accCorr1, -90, 90);
-  }
-
-   for(byte i=0; i<3; i++) {
-    gyroCorr1 = (float)((gyroValue1[i]/GYRO_SENSITITY) - GYRO_OFFSET);
-    gyroAngle1[i] = (gyroCorr1 * GYRO_SCALE) * -LOOP_TIME;
-  }
-
-  //Calculate angle for second gyro
-  for(byte i=0; i<3; i++) {
-    accCorr2 = accValue2[i] - ACCEL_OFFSET;
-    accCorr2 = map(accCorr2, -16800, 16800, -90, 90);
-    accAngle2[i] = constrain(accCorr2, -90, 90);
-  }
-
-   for(byte i=0; i<3; i++) {
-    gyroCorr2 = (float)((gyroValue2[i]/GYRO_SENSITITY) - GYRO_OFFSET);
-    gyroAngle2[i] = (gyroCorr2 * GYRO_SCALE) * -LOOP_TIME;
-  }
   
   //Calculate rpm value from sensor values
-  //driveRPM = gyroAngle1[1] - gyroAngle2[1];
 }
 
 
@@ -218,9 +160,6 @@ void readGyro() {
 void readThrottle() {
   int32_t throttleValue = analogRead(THROTTLE);
   throttleValue -= 900; //offset of ~840
-
-  //scale remaining range of 0-2000 to rpm value
-  //throttleValue *= 4;
 
   //if negative due to offset reset to 0
   if(throttleValue < 0) {
@@ -344,27 +283,26 @@ void setup() {
   //attachInterrupt(BUTTON, ISR, CHANGE);  
 
   //Setup first gyro
-  Wire.begin();
-  Wire.beginTransmission(MPU6050_ADRESS1); // Begins a transmission to the I2C slave (GY-521 board)
-  Wire.write(0x6B); // PWR_MGMT_1 register
-  Wire.write(0); // set to zero (wakes up the MPU-6050)
-  Wire.endTransmission(true);
+  mpu1.initialize();
 
   //Setup second gyro
   pinMode(GYRO, OUTPUT);
   digitalWrite(GYRO, HIGH);
-  delay(100);
-  Wire.begin();
-  Wire.beginTransmission(MPU6050_ADRESS2); // Begins a transmission to the I2C slave (GY-521 board)
-  Wire.write(0x6B); // PWR_MGMT_1 register
-  Wire.write(0); // set to zero (wakes up the MPU-6050)
-  Wire.endTransmission(true);
+  mpu2.initialize();
   
   //Initialize display
   display.begin(SSD1306_SWITCHCAPVCC, 0x3C);
   delay(50);
   display.clearDisplay();
   display.setTextColor(WHITE);
+
+  if (mpu1.testConnection() || mpu2.testConnection) {
+    display.setTextSize(2);
+    display.println("Connection to one or both position sensors failed");
+    display.display();
+    delay(2000);
+    display.clearDisplay();
+  }
 
   //Show successful Bootup on display for 2s
   display.setTextSize(2);
@@ -381,7 +319,7 @@ void loop() {
   readSensors();
 
   //Control motor
-  drive(driveRPM);
+  drive(0);
   
   //Write on display
   showOnDisplay();
